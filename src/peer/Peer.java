@@ -5,31 +5,48 @@ import tracker.PeerInfo;
 import java.io.*;
 import java.net.*;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+// javac -d out src/peer/Peer.java src/tracker/PeerInfo.java
+// java peer.Peer 5001
 
 public class Peer {
     private final String trackerIp;
     private final int trackerPort;
     private final int localPort;
     private DatagramSocket socket;
+    private File peerFolder;
 
     private final List<PeerInfo> knownPeers = new ArrayList<>();
     private final Map<PeerInfo, Set<Integer>> peerPieces = new HashMap<>();
+    private final Set<Integer> myPieces = new HashSet<>();
 
     public Peer(String trackerIp, int trackerPort, int localPort) {
         this.trackerIp = trackerIp;
         this.trackerPort = trackerPort;
         this.localPort = localPort;
+        this.peerFolder = new File("peer_data_" + localPort);
+        if (!peerFolder.exists()) peerFolder.mkdirs();
     }
 
     public void start() throws Exception {
-        socket = new DatagramSocket();
-        sendJoin();
+        initializeWithRandomPieces(2);
+        loadLocalPieces();
 
+        socket = new DatagramSocket();
+
+        sendJoin();
         receivePeersList();
         startTCPServer();
 
-        Set<Integer> myPieces = Set.of(1, 2); // exemplo
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(this::sendUpdateToTracker, 0, 10, TimeUnit.SECONDS);
+
         Integer rarest = chooseRarestPiece(myPieces);
 
         PeerInfo target = null;
@@ -44,7 +61,8 @@ public class Peer {
             String content = requestPieceFromPeer(target, rarest);
             if (content != null) {
                 System.out.println("Recebido pedaço " + rarest + ": " + content);
-                // Próxima etapa: salvar o pedaço localmente
+                savePieceToFile(rarest, content);
+                myPieces.add(rarest);
             }
         }
     }
@@ -57,6 +75,79 @@ public class Peer {
         DatagramPacket packet = new DatagramPacket(buffer, buffer.length, trackerAddress, trackerPort);
         socket.send(packet);
         System.out.println("Enviado JOIN para Tracker");
+    }
+
+    private void sendUpdateToTracker() {
+        try {
+            String piecesStr = myPieces.isEmpty()
+                    ? "none"
+                    : myPieces.toString().replaceAll("[\\[\\] ]", "");
+
+            String ip = InetAddress.getLocalHost().getHostAddress();
+            String updateMessage = "UPDATE:" + ip + ":" + localPort + ":" + piecesStr;
+
+            byte[] buffer = updateMessage.getBytes();
+            InetAddress trackerAddress = InetAddress.getByName(trackerIp);
+
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length, trackerAddress, trackerPort);
+            socket.send(packet);
+
+            System.out.println("Enviado UPDATE para Tracker: " + updateMessage);
+
+        } catch (Exception e) {
+            System.err.println("Erro ao enviar UPDATE: " + e.getMessage());
+        }
+    }
+
+    private void savePieceToFile(int pieceNumber, String content) {
+        try {
+            File outFile = new File(peerFolder, pieceNumber + ".txt");
+            Files.write(outFile.toPath(), content.getBytes());
+            System.out.println("Salvou pedaço " + pieceNumber + " em " + outFile.getPath());
+        } catch (IOException e) {
+            System.err.println("Erro ao salvar pedaço: " + e.getMessage());
+        }
+    }
+
+    private void initializeWithRandomPieces(int quantity) {
+        File sourceFolder = new File("pieces");
+        File[] files = sourceFolder.listFiles((dir, name) -> name.endsWith(".txt"));
+
+        if (files == null || files.length < quantity) return;
+
+        List<File> fileList = Arrays.asList(files);
+        Collections.shuffle(fileList);
+
+        for (int i = 0; i < quantity; i++) {
+            File piece = fileList.get(i);
+            File destination = new File(peerFolder, piece.getName());
+
+            try {
+                Files.copy(piece.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        System.out.println("🔄 Pedaços iniciais copiados para " + peerFolder.getName());
+    }
+
+    private void loadLocalPieces() {
+        if (!peerFolder.exists()) return;
+
+        File[] files = peerFolder.listFiles((dir, name) -> name.endsWith(".txt"));
+        if (files == null) return;
+
+        for (File file : files) {
+            String name = file.getName().replace(".txt", "");
+            try {
+                int pieceNumber = Integer.parseInt(name);
+                myPieces.add(pieceNumber);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+
+        System.out.println("📦 Pedaços locais carregados: " + myPieces);
     }
 
     private void receivePeersList() throws Exception {
@@ -148,7 +239,8 @@ public class Peer {
             System.out.println("Recebida requisição TCP: " + request);
 
             if (request != null && request.startsWith("GET:")) {
-                int pieceNumber = Integer.parseInt(request.substring(4));
+                int pieceNumber = Integer.parseInt(request.substring(4).trim());
+
                 File pieceFile = new File("pieces/" + pieceNumber + ".txt");
 
                 if (pieceFile.exists()) {
@@ -160,7 +252,8 @@ public class Peer {
                 out.flush();
             }
 
-        } catch (IOException e) {
+        } catch (IOException | NumberFormatException e) {
+            System.err.println("Erro ao lidar com requisição TCP: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -186,7 +279,8 @@ public class Peer {
 
     public static void main(String[] args) {
         try {
-            Peer peer = new Peer("127.0.0.1", 8888, 5001);
+            int port = Integer.parseInt(args[0]);
+            Peer peer = new Peer("127.0.0.1", 8888, port);
             peer.start();
         } catch (Exception e) {
             e.printStackTrace();
