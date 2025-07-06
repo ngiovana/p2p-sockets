@@ -13,7 +13,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 // javac -d out src/peer/Peer.java src/tracker/PeerInfo.java
-// java peer.Peer 5001
+// java -cp out peer.Peer 5001
 
 public class Peer {
     private final String trackerIp;
@@ -21,6 +21,7 @@ public class Peer {
     private final int localPort;
     private DatagramSocket socket;
     private File peerFolder;
+    private boolean reconstructed = false;
 
     private final List<PeerInfo> knownPeers = new ArrayList<>();
     private final Map<PeerInfo, Set<Integer>> peerPieces = new HashMap<>();
@@ -35,7 +36,7 @@ public class Peer {
     }
 
     public void start() throws Exception {
-        initializeWithRandomPieces(2);
+        initializeWithRandomPieces(5);
         loadLocalPieces();
 
         socket = new DatagramSocket();
@@ -47,24 +48,13 @@ public class Peer {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleAtFixedRate(this::sendUpdateToTracker, 0, 10, TimeUnit.SECONDS);
 
-        Integer rarest = chooseRarestPiece(myPieces);
+        fetchMissingPiecesLoop();
 
-        PeerInfo target = null;
-        for (Map.Entry<PeerInfo, Set<Integer>> entry : peerPieces.entrySet()) {
-            if (entry.getValue().contains(rarest)) {
-                target = entry.getKey();
-                break;
+        scheduler.scheduleAtFixedRate(() -> {
+            if (!reconstructed && myPieces.containsAll(Arrays.asList(1,2,3,4,5,6,7,8,9,10))) {
+                reconstructFileIfComplete();
             }
-        }
-
-        if (target != null && rarest != null) {
-            String content = requestPieceFromPeer(target, rarest);
-            if (content != null) {
-                System.out.println("Recebido pedaço " + rarest + ": " + content);
-                savePieceToFile(rarest, content);
-                myPieces.add(rarest);
-            }
-        }
+        }, 5, 10, TimeUnit.SECONDS);
     }
 
     private void sendJoin() throws Exception {
@@ -241,7 +231,7 @@ public class Peer {
             if (request != null && request.startsWith("GET:")) {
                 int pieceNumber = Integer.parseInt(request.substring(4).trim());
 
-                File pieceFile = new File("pieces/" + pieceNumber + ".txt");
+                File pieceFile = new File(peerFolder, pieceNumber + ".txt");
 
                 if (pieceFile.exists()) {
                     String content = new String(Files.readAllBytes(pieceFile.toPath()));
@@ -275,6 +265,84 @@ public class Peer {
             System.err.println("Erro ao requisitar pedaço " + pieceNumber + " de " + peer);
         }
         return null;
+    }
+
+    private void fetchMissingPiecesLoop() {
+        new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(10000);
+
+                    Integer rarest = chooseRarestPiece(myPieces);
+                    if (rarest == null) {
+                        System.out.println("Nenhum pedaço raro a baixar (já tenho todos disponíveis no momento).");
+                        continue;
+                    }
+
+                    PeerInfo target = null;
+                    for (Map.Entry<PeerInfo, Set<Integer>> entry : peerPieces.entrySet()) {
+                        if (entry.getValue().contains(rarest)) {
+                            target = entry.getKey();
+                            break;
+                        }
+                    }
+
+                    if (target != null) {
+                        System.out.println("Solicitando pedaço " + rarest + " de " + target);
+                        String content = requestPieceFromPeer(target, rarest);
+                        if (content != null) {
+                            savePieceToFile(rarest, content);
+                            myPieces.add(rarest);
+                            reconstructFileIfComplete();
+                        } else {
+                            System.out.println("Falha ao receber pedaço " + rarest);
+                        }
+                    }
+
+                } catch (InterruptedException e) {
+                    System.err.println("Loop de download interrompido: " + e.getMessage());
+                    break;
+                }
+            }
+        }).start();
+    }
+
+    private void reconstructFileIfComplete() {
+        List<Integer> expectedPieces = Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+
+        if (!myPieces.containsAll(expectedPieces)) {
+            System.out.println("Ainda não possui todos os pedaços para reconstrução.");
+            return;
+        }
+
+        File finalFile = new File(peerFolder, "arquivo_final.txt");
+
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(finalFile), "UTF-8"))) {
+            for (int i = 1; i <= 10; i++) {
+                File pieceFile = new File(peerFolder, i + ".txt");
+
+                if (!pieceFile.exists()) {
+                    System.out.println("Pedaço " + i + " não encontrado na pasta. Pulando...");
+                    continue;
+                }
+
+                System.out.println("Adicionando pedaço " + i + " ao arquivo final...");
+
+                try (BufferedReader reader = new BufferedReader(new FileReader(pieceFile))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        writer.write(line);
+                        writer.newLine();
+                    }
+                }
+            }
+
+            System.out.println("Arquivo final reconstruído com sucesso: " + finalFile.getPath());
+            reconstructed = true;
+
+        } catch (IOException e) {
+            System.err.println("Erro ao reconstruir o arquivo: " + e.getMessage());
+        }
     }
 
     public static void main(String[] args) {
