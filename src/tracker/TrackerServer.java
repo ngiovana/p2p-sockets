@@ -34,6 +34,29 @@ public class TrackerServer {
                 processJoin(message, senderIp, senderPort);
             } else if (message.startsWith("UPDATE:")) {
                 processUpdate(message);
+            } else if (message.startsWith("GETPEERS:")) {
+                String portStr = message.split(":")[1];
+                int port = Integer.parseInt(portStr);
+                InetAddress requesterIp = packet.getAddress();
+
+                StringBuilder response = new StringBuilder("PEERS");
+                for (Map.Entry<PeerInfo, Set<Integer>> entry : peersMap.entrySet()) {
+                    PeerInfo peer = entry.getKey();
+                    if (peer.getIp().equals(requesterIp.getHostAddress()) && peer.getPort() == port) {
+                        continue;
+                    }
+
+                    Set<Integer> pieces = entry.getValue();
+                    String pieceStr = pieces == null || pieces.isEmpty()
+                            ? "none"
+                            : pieces.toString().replaceAll("[\\[\\] ]", "");
+
+                    response.append("|").append(peer.getIp()).append(":").append(peer.getPort()).append(":").append(pieceStr);
+                }
+
+                byte[] sendData = response.toString().getBytes();
+                DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, packet.getAddress(), packet.getPort());
+                socket.send(sendPacket);
             }
         }
     }

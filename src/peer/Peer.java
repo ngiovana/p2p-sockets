@@ -13,7 +13,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 // javac -d out src/peer/Peer.java src/tracker/PeerInfo.java
-// java -cp out peer.Peer 5001
+// java -cp out peer.Peer 192.168.0.111 5001
 
 public class Peer {
     private final String trackerIp;
@@ -36,7 +36,7 @@ public class Peer {
     }
 
     public void start() throws Exception {
-        initializeWithRandomPieces(5);
+        // initializeWithRandomPieces(5);
         loadLocalPieces();
 
         socket = new DatagramSocket();
@@ -55,6 +55,14 @@ public class Peer {
                 reconstructFileIfComplete();
             }
         }, 5, 10, TimeUnit.SECONDS);
+
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                requestUpdatedPeerList();
+            } catch (Exception e) {
+                System.err.println("Erro ao atualizar lista de peers: " + e.getMessage());
+            }
+        }, 3, 10, TimeUnit.SECONDS);
     }
 
     private void sendJoin() throws Exception {
@@ -119,7 +127,7 @@ public class Peer {
             }
         }
 
-        System.out.println("🔄 Pedaços iniciais copiados para " + peerFolder.getName());
+        System.out.println("Pedaços iniciais copiados para " + peerFolder.getName());
     }
 
     private void loadLocalPieces() {
@@ -137,7 +145,7 @@ public class Peer {
             }
         }
 
-        System.out.println("📦 Pedaços locais carregados: " + myPieces);
+        System.out.println("Pedaços locais carregados: " + myPieces);
     }
 
     private void receivePeersList() throws Exception {
@@ -156,6 +164,9 @@ public class Peer {
     private void parsePeersList(String message) {
         // Exemplo: PEERS|127.0.0.1:5001:1,2,3|127.0.0.1:5002:none
         String[] parts = message.split("\\|");
+
+        knownPeers.clear();
+        peerPieces.clear();
 
         for (int i = 1; i < parts.length; i++) {
             String[] peerData = parts[i].split(":");
@@ -271,7 +282,7 @@ public class Peer {
         new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(10000);
+                    Thread.sleep(11000);
 
                     Integer rarest = chooseRarestPiece(myPieces);
                     if (rarest == null) {
@@ -306,6 +317,27 @@ public class Peer {
             }
         }).start();
     }
+
+    private void requestUpdatedPeerList() throws Exception {
+        String message = "GETPEERS:" + localPort;
+        byte[] buffer = message.getBytes();
+
+        InetAddress trackerAddress = InetAddress.getByName(trackerIp);
+        DatagramPacket packet = new DatagramPacket(buffer, buffer.length, trackerAddress, trackerPort);
+        socket.send(packet);
+
+        byte[] responseBuffer = new byte[2048];
+        DatagramPacket responsePacket = new DatagramPacket(responseBuffer, responseBuffer.length);
+        socket.receive(responsePacket);
+
+        String response = new String(responsePacket.getData(), 0, responsePacket.getLength());
+
+        if (response.startsWith("PEERS")) {
+            System.out.println("Lista de peers atualizada do Tracker recebida.");
+            parsePeersList(response);
+        }
+    }
+
 
     private void reconstructFileIfComplete() {
         List<Integer> expectedPieces = Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
@@ -347,8 +379,9 @@ public class Peer {
 
     public static void main(String[] args) {
         try {
-            int port = Integer.parseInt(args[0]);
-            Peer peer = new Peer("127.0.0.1", 8888, port);
+            String trackerIp = args[0];
+            int port = Integer.parseInt(args[1]);
+            Peer peer = new Peer(trackerIp, 8888, port);
             peer.start();
         } catch (Exception e) {
             e.printStackTrace();
