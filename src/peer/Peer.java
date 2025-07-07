@@ -1,7 +1,5 @@
 package peer;
 
-import tracker.PeerInfo;
-
 import java.io.*;
 import java.net.*;
 import java.nio.file.Files;
@@ -12,7 +10,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-// javac -d out src/peer/Peer.java src/tracker/PeerInfo.java
+// javac -d out src/peer/Peer.java src/peer/PeerInfo.java
 // java -cp out peer.Peer 192.168.0.111 5001
 
 public class Peer {

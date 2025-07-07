@@ -1,5 +1,7 @@
 package tracker;
 
+import peer.PeerInfo;
+
 import java.io.IOException;
 import java.net.*;
 import java.util.*;
